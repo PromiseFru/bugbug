@@ -9,6 +9,7 @@ import torch
 import xgboost
 from imblearn.over_sampling import BorderlineSMOTE
 from imblearn.pipeline import Pipeline as ImblearnPipeline
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.pipeline import Pipeline
@@ -21,17 +22,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class DistilBertModule:
-    def __init__(self, model_name="distilbert-base-uncased"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.bert_model = AutoModel.from_pretrained(model_name)
+class DistilBertModule(BaseEstimator, TransformerMixin):
+    def __init__(self):
+        self.tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+        self.model = AutoModel.from_pretrained("distilbert-base-uncased")
 
-    def __call__(self, text_data):
+    def fit(self, X, y):
+        return self
+
+    def transform(self, X):
+        print("Text Data:", X.tolist())
         tokenized_input = self.tokenizer(
-            text_data, return_tensors="pt", padding=True, truncation=True
+            X.tolist(), return_tensors="pt", padding=True, truncation=True
         )
+
+        print("Text Tokens:", tokenized_input)
+
         with torch.no_grad():
-            output = self.bert_model(**tokenized_input)
+            output = self.model(**tokenized_input)
         return output.last_hidden_state.mean(dim=1)
 
 
