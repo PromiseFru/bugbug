@@ -5,18 +5,34 @@
 
 import logging
 
+import torch
 import xgboost
 from imblearn.over_sampling import BorderlineSMOTE
 from imblearn.pipeline import Pipeline as ImblearnPipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.pipeline import Pipeline
+from transformers import AutoModel, AutoTokenizer
 
 from bugbug import bug_features, bugzilla, feature_cleanup, utils
 from bugbug.model import BugModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class DistilBertModule:
+    def __init__(self, model_name="distilbert-base-uncased"):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.bert_model = AutoModel.from_pretrained(model_name)
+
+    def __call__(self, text_data):
+        tokenized_input = self.tokenizer(
+            text_data, return_tensors="pt", padding=True, truncation=True
+        )
+        with torch.no_grad():
+            output = self.bert_model(**tokenized_input)
+        return output.last_hidden_state.mean(dim=1)
 
 
 class PerformanceBugModel(BugModel):
@@ -51,6 +67,8 @@ class PerformanceBugModel(BugModel):
             feature_cleanup.crash(),
         ]
 
+        self.text_vectorizer = DistilBertModule()
+
         self.extraction_pipeline = Pipeline(
             [
                 (
@@ -69,10 +87,10 @@ class PerformanceBugModel(BugModel):
                     ColumnTransformer(
                         [
                             ("data", DictVectorizer(), "data"),
-                            ("title", self.text_vectorizer(min_df=0.0001), "title"),
+                            ("title", self.text_vectorizer, "title"),
                             (
                                 "first_comment",
-                                self.text_vectorizer(min_df=0.0001),
+                                self.text_vectorizer,
                                 "first_comment",
                             ),
                         ]
