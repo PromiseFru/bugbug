@@ -5,10 +5,12 @@
 
 import logging
 
+import numpy as np
 import torch
 import xgboost
 from imblearn.over_sampling import BorderlineSMOTE
 from imblearn.pipeline import Pipeline as ImblearnPipeline
+from more_itertools import chunked
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction import DictVectorizer
@@ -22,25 +24,31 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class DistilBertModule(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        self.tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
-        self.model = AutoModel.from_pretrained("distilbert-base-uncased")
+class TransformerEmbedding(TransformerMixin, BaseEstimator):
+    def __init__(self, model_name="distilbert-base-uncased", batch_size=1):
+        self.model_name = model_name
+        self.batch_size = batch_size
 
-    def fit(self, X, y):
+    def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        print("Text Data:", X.tolist())
-        tokenized_input = self.tokenizer(
-            X.tolist(), return_tensors="pt", padding=True, truncation=True
-        )
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        model = AutoModel.from_pretrained(self.model_name)
 
-        print("Text Tokens:", tokenized_input)
+        res = []
+        for batch in chunked(X, self.batch_size):
+            encoded_input = tokenizer.batch_encode_plus(
+                batch, return_tensors="pt", padding=True, truncation=True
+            )
+            with torch.no_grad():
+                output = model(**encoded_input)
 
-        with torch.no_grad():
-            output = self.model(**tokenized_input)
-        return output.last_hidden_state.mean(dim=1)
+            embed = output.last_hidden_state[:, 0, :].detach().numpy()
+            res.append(embed)
+
+        print("Array Concat >>>", np.concatenate(res).shape)
+        return np.concatenate(res)
 
 
 class PerformanceBugModel(BugModel):
@@ -75,7 +83,7 @@ class PerformanceBugModel(BugModel):
             feature_cleanup.crash(),
         ]
 
-        self.text_vectorizer = DistilBertModule()
+        self.text_vectorizer = TransformerEmbedding()
 
         self.extraction_pipeline = Pipeline(
             [
