@@ -8,7 +8,7 @@ from logging import INFO, basicConfig, getLogger
 
 from mozci.push import Push
 
-from bugbug import repository
+from bugbug import db, repository
 
 basicConfig(level=INFO)
 logger = getLogger(__name__)
@@ -31,19 +31,15 @@ def extract_commits(source, event_type, limit=None) -> list:
 
     if event_type == "backouts":
         for commit in source:
-            result = {}
             if commit["backedoutby"]:
-                p = Push(commit["node"])
-                result["bad"] = commit["node"]
-                result["good"] = p.bustage_fixed_by
-
-                # Save commit result
-                save_commit_result(result)
-
-                commits.append(result)
+                commits.append(commit["node"])
 
                 if limit and len(commits) >= limit:
                     break
+
+        p = Push(commits)
+        save_commit_result(p.bustage_fixed_by)
+
     else:
         # Add implementation for other event types
         pass
@@ -70,7 +66,7 @@ def main() -> None:
 
     logger.info(f"Starting with limit: {limit}")
 
-    # assert db.download(repository.COMMITS_DB)
+    assert db.download(repository.COMMITS_DB)
 
     source = repository.get_commits(include_backouts=True)
     extract_commits(source, "backouts", limit)
