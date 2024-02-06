@@ -33,10 +33,12 @@ def extract_commits(source, event_type, limit=None) -> list:
         for commit in source:
             result = {}
             if commit["backedoutby"]:
-                print("Got one backout!")
                 p = Push(commit["node"])
                 result["bad"] = commit["node"]
                 result["good"] = p.bustage_fixed_by
+
+                # Save commit result
+                save_commit_result(result)
 
                 commits.append(result)
 
@@ -48,6 +50,13 @@ def extract_commits(source, event_type, limit=None) -> list:
 
     logger.info(f"Extracted {len(commits)} commits for event type: {event_type}")
     return commits
+
+
+def save_commit_result(commit_result):
+    """Writes the commit result to a JSON file."""
+    with open("commit_code_db.json", "a", encoding="utf-8") as f:
+        json.dump(commit_result, f)
+        f.write("\n")
 
 
 def main() -> None:
@@ -64,12 +73,7 @@ def main() -> None:
     # assert db.download(repository.COMMITS_DB)
 
     source = repository.get_commits(include_backouts=True)
-    commits = extract_commits(source, "backouts", limit)
-
-    with open("commit_code_db.json", "w") as f:
-        json.dump(commits, f)
-
-    logger.info("Commits written to commit_code_db.json.")
+    extract_commits(source, "backouts", limit)
 
     logger.info("Process completed.")
 
