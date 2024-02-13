@@ -1,75 +1,135 @@
-# -*- coding: utf-8 -*-
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this file,
-# You can obtain one at http://mozilla.org/MPL/2.0/.
 import argparse
 import json
+import itertools
+
 from logging import INFO, basicConfig, getLogger
+from datetime import datetime, timedelta
+from tqdm import tqdm
 
 from mozci.push import Push
-
-from bugbug import db, repository
+from bugbug import bugzilla, db, repository, phabricator
 
 basicConfig(level=INFO)
 logger = getLogger(__name__)
 
 
-def extract_commits(source, event_type, limit=None) -> list:
-    """Extracts commits based on the specified events.
+def group_commits_by_bug(source, start_date=None, limit=None):
+    """Groups commits by bug ID."""
+    commits = list(itertools.islice(source, limit))
+    start_date = (
+        datetime.strptime(start_date, "%Y-%m-%d")
+        if start_date
+        else datetime.now() - timedelta(days=365 * 2)
+    )
 
-    Args:
-        source (dict): Source of the commits (e.g., COMMIT_DB).
-        event_type (str): Type of event to filter commits (e.g., backouts, review comments).
-        limit (int): Maximum number of commits to extract.
+    grouped_commits = {}
 
-    Returns:
-        list: List of extracted commits.
-    """
-    assert source, "Source must be provided."
+    for commit in commits:
+        commit_date = datetime.strptime(commit["pushdate"], "%Y-%m-%d %H:%M:%S")
+        if commit_date < start_date:
+            continue
 
-    commits = []
+        bug_id = commit.get("bug_id", "Unknown")
+        if bug_id not in grouped_commits:
+            grouped_commits[bug_id] = []
+        commit_details = {
+            key: commit[key]
+            for key in [
+                "node",
+                "author",
+                "bug_id",
+                "desc",
+                "pushdate",
+                "backsout",
+                "backedoutby",
+                "author_email",
+                "reviewers",
+                "ignored",
+                "source_code_added",
+                "other_added",
+                "test_added",
+                "source_code_deleted",
+                "other_deleted",
+                "test_deleted",
+                "types",
+            ]
+        }
+        commit_details["backed_out"] = bool(commit["backedoutby"])
+        grouped_commits[bug_id].append(commit_details)
+
+    return grouped_commits
+
+
+def extract_commits(grouped_commits, event_type, limit=None) -> None:
+    """Extracts commits based on the specified events and saves periodically."""
 
     if event_type == "backouts":
-        for commit in source:
-            if commit["backedoutby"]:
-                commits.append(commit["node"])
+        extracted_commits = {}
 
-                if limit and len(commits) >= limit:
-                    break
+        if limit:
+            limited_grouped_commits = dict(
+                itertools.islice(grouped_commits.items(), limit)
+            )
+        else:
+            limited_grouped_commits = grouped_commits
 
-        p = Push(commits)
-        save_commit_result(p.bustage_fixed_by)
+        bug_ids = limited_grouped_commits.keys()
+        bugs = bugzilla.get(bug_ids)
 
+        for bug_id, commits in limited_grouped_commits.items():
+            bug_id = int(bug_id)
+            bug = bugs[bug_id]
+
+            if bug["status"] not in ["VERIFIED"] or len(commits) < 2:
+                continue
+
+            commits_sorted = sorted(
+                commits,
+                key=lambda x: datetime.strptime(x["pushdate"], "%Y-%m-%d %H:%M:%S"),
+            )
+
+            # Check if any commits were backed out
+            backed_out_commits = [
+                commit
+                for commit in commits_sorted
+                if commit["backed_out"]
+                and "backed out changeset" not in commit["desc"].lower()
+            ]
+            if not backed_out_commits:
+                # If no backed out commits, continue to the next bug
+                continue
+
+            # Iterate over backed out commits
+            for backed_out_commit in backed_out_commits:
+                # Find the index of the backed out commit
+                backed_out_index = commits_sorted.index(backed_out_commit)
+
+                # Check if there are subsequent non-backed-out commits
+                for subsequent_commit in commits_sorted[backed_out_index + 1 :]:
+                    if (
+                        not subsequent_commit["backed_out"]
+                        and "backed out changeset"
+                        not in subsequent_commit["desc"].lower()
+                    ):
+                        extracted_commits[bug_id] = {
+                            "bad_commit": backed_out_commit,
+                            "good_commit": subsequent_commit,
+                        }
+
+        logger.info(f"Extracted commits for event type: {event_type}")
+        print(extracted_commits)
     else:
         # Add implementation for other event types
         pass
 
-    logger.info(f"Extracted {len(commits)} commits for event type: {event_type}")
-    return commits
-
-
-def save_commit_result(commit_result):
-    """Writes the commit result to a JSON file."""
-    with open("commit_code_db.json", "a", encoding="utf-8") as f:
-        json.dump(commit_result, f)
-        f.write("\n")
-
 
 def main() -> None:
-    description = "Retrieve good and bad code associated with commits."
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument(
-        "--limit", type=int, help="Limit the number of commits to retrieve."
-    )
-    args = parser.parse_args()
-    limit = args.limit
-
-    logger.info(f"Starting with limit: {limit}")
-
-    assert db.download(repository.COMMITS_DB)
-
     source = repository.get_commits(include_backouts=True)
-    extract_commits(source, "backouts", limit)
+
+    with open("commit_code_db.json", "r", encoding="utf-8") as json_file:
+        grouped_commits = json.load(json_file)
+
+    extract_commits(grouped_commits, "backouts", limit=100)
 
     logger.info("Process completed.")
 
